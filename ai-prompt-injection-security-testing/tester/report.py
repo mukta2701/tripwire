@@ -180,7 +180,8 @@ def render_report(summary: dict, crosswalk: dict, now: str | None = None) -> str
          f"Report timestamp (varies): {stamp}", "",
          "## Summary", "",
          f"- Cases: {len(results)}",
-         f"- PASS: {summary['pass_count']} | PARTIAL: {summary['partial_count']} | FAIL: {summary['fail_count']}",
+         f"- PASS: {summary['pass_count']} | PARTIAL: {summary['partial_count']} | FAIL: {summary['fail_count']}" +
+         (f" | BLOCKED: {summary['blocked_count']} (blocked by guardrail)" if "blocked_count" in summary else ""),
          f"- Average exposure-adjusted residual risk (illustrative prioritisation score): "
          f"{summary['average_exposure_adjusted_residual_risk']}",
          f"- Overall risk posture (illustrative label): {esc(summary['overall_risk_posture'])}",

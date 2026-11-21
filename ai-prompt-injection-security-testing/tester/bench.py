@@ -57,7 +57,7 @@ class Progress:
     def __init__(self, out, guardrail="none"):
         self.out = out
         self.guardrail = guardrail
-        self.tally = {"PASS": 0, "FAIL": 0, "PARTIAL": 0, "BLOCKED": 0}
+        self.tally = {"PASS": 0, "FAIL": 0, "PARTIAL": 0}
 
     def __call__(self, e: dict) -> None:
         self.tally[e["outcome"]] = self.tally.get(e["outcome"], 0) + 1

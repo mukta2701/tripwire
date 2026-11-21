@@ -367,6 +367,16 @@ class BenchGuardrailTests(unittest.TestCase):
         self.assertIn("guardrail", local_md)
         self.assertIn("guardrail", local_html)
 
+    def test_markdown_summary_shows_blocked_count_only_for_local(self):
+        _, local, _, _, local_md, _ = run_bench(
+            "--target", "mock", "--mode", "unsafe", "--trials", "1", "--guardrail", "local")
+        _, none, _, _, none_md, _ = run_bench(
+            "--target", "mock", "--mode", "unsafe", "--trials", "1", "--guardrail", "none")
+        summary_local = next(line for line in local_md.splitlines() if line.startswith("- PASS:"))
+        self.assertIn("| BLOCKED: 7 (blocked by guardrail)", summary_local)
+        summary_none = next(line for line in none_md.splitlines() if line.startswith("- PASS:"))
+        self.assertNotIn("BLOCKED", summary_none)
+
     def test_block_shown_as_blocked_never_refusal(self):
         _, summary, _, html, md, _ = run_bench("--target", "mock", "--mode", "unsafe",
                                                "--trials", "1", "--guardrail", "local")
