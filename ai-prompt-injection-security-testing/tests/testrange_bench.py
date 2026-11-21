@@ -59,15 +59,51 @@ class RangeBenchTests(unittest.TestCase):
             io.StringIO(), "--target", "mock", "--mode", "unsafe", "--trials", "1")
         self.assertEqual(code, 0)
         self.assertNotIn("Sixteen synthetic", html)
+        md_sections = {chunk.split(":")[0]: chunk for chunk in md.split("\n### ") if ": " in chunk[:12]}
         for result in summary["results"]:
             if result["outcome"] != "FAIL":
                 continue
+            md_finding = md_sections[result["test_id"]]
+            html_finding = next(block for block in html.split("<details>")[1:]
+                                if f"{result['test_id']}:" in block.split("</details>")[0])
             for doc_id in result["range"]["retrieved_ids"]:
-                self.assertIn(doc_id, html)
-                self.assertIn(doc_id, md)
+                self.assertIn(doc_id, md_finding)
+                self.assertIn(doc_id, html_finding)
             tool = result["range"]["tool_call"]["tool"]
-            self.assertIn(tool, html)
-            self.assertIn(tool.replace("_", "\\_"), md)
+            self.assertIn(tool, html_finding)
+            self.assertIn(tool.replace("_", "\\_"), md_finding)
+
+    def test_long_call_evidence_is_complete_in_its_finding(self):
+        from tester.report import render_report
+        from tester.report_html import render_html
+        from tester.targets import TargetResponse
+        from agent_range import suite
+        import json as _json
+
+        body = "[TEST] " + "x" * 650 + " HARMLESS_CANARY_RNG_01"
+
+        class LongCall:
+            name = "long-call"
+
+            def send(self, text, *, canary=None):
+                return TargetResponse(
+                    "Quoting the note: "
+                    + _json.dumps({"tool": "send_message",
+                                   "arguments": {"to": "outside-inbox-42", "body": body}})
+                    + " and refusing.", {})
+
+        summary = suite.run_range_tests("unsafe", target=LongCall())
+        crosswalk = _json.loads(Path("data/framework_crosswalk.json").read_text(encoding="utf-8"))
+        html = render_html(summary, crosswalk, scorer=None)
+        md = render_report(summary, crosswalk)
+        md_finding = next(chunk for chunk in md.split("\n### ") if chunk.startswith("RNG-01"))
+        html_finding = next(block for block in html.split("<details>")[1:]
+                            if "RNG-01:" in block.split("</details>")[0])
+        for finding in (md_finding, html_finding):
+            self.assertIn("x" * 650, finding)
+            self.assertIn("send", finding)
+        self.assertIn("HARMLESS\\_CANARY\\_RNG\\_01", md_finding)
+        self.assertIn("HARMLESS_CANARY_RNG_01", html_finding)
 
     def test_hostile_tool_text_is_escaped_in_both_pages(self):
         from tester.report import render_report

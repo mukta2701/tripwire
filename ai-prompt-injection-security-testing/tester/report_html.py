@@ -154,9 +154,8 @@ def _range_html(r: dict) -> str:
     line = scope["log_line"] if scope["log_line"] is not None else "no log line was written"
     return (f'<h3>Range evidence</h3><dl>'
             f'<dt>Retrieved documents</dt><dd><code>{h(ids)}</code></dd>'
-            f'<dt>Tool call</dt><dd><code>{h(call)}</code></dd>'
-            f'<dt>Log line</dt><dd><code>{h(line)}</code></dd></dl>')
-
+            f'<dt>Tool call</dt><dd><code>{h(call, None)}</code></dd>'
+            f'<dt>Log line</dt><dd><code>{h(line, None)}</code></dd></dl>')
 
 def _case_study_html(study) -> str:
     cards = []

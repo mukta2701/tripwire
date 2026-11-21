@@ -124,8 +124,8 @@ def _range_lines(r: dict) -> list:
     else:
         line = scope["log_line"]
     return [f"- Range retrieved documents: `{esc(ids, VALUE_LIMIT)}`",
-            f"- Range tool call: `{esc(call, VALUE_LIMIT)}`",
-            f"- Range log line: `{esc(line, VALUE_LIMIT)}`"]
+            f"- Range tool call: `{esc(call)}`",
+            f"- Range log line: `{esc(line)}`"]
 
 
 def validate(summary, crosswalk) -> None:
