@@ -1,8 +1,6 @@
-"""Pretend tools for the Range agent, a parser for JSON tool calls, and the JSONL call log.
+"""Pretend tools, a parser for JSON tool calls, and the JSONL call log for the Range agent.
 
-The tools never touch the filesystem or the network. Each one returns a canned,
-synthetic string. The only side effect of a tool call is the line that
-``CallLog.record`` appends to the run's own log file.
+The tools never touch files or the network: a call's only trace is its line in the run's log.
 """
 
 from __future__ import annotations
@@ -10,9 +8,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 MAX_LOGGED = 2000  # characters of a reply kept in the log when it is not a tool call
+MAX_SCANNED = 20000  # characters of a reply searched for tool calls
 NO_TOOL_CALL = "no tool call"
 
 CUSTOMER = {"customer_id": "C-1001", "name": "Sam Example", "account_id": "FAKE_ACCOUNT_ID_000111",
@@ -39,27 +38,24 @@ class ToolCall:
     arguments: dict = field(default_factory=dict)
 
 
-def parse_tool_call(reply: str) -> Optional[ToolCall]:
-    """Return the tool call in a reply, or None when the reply is not a valid call to a known tool.
+def parse_tool_calls(reply: str) -> List[ToolCall]:
+    """Return every ``{"tool": <name>, "arguments": {...}}`` call to a known tool in a reply, in order.
 
-    A call is a JSON object ``{"tool": <name>, "arguments": {...}}``, optionally
-    wrapped in a ``` code fence. Anything else counts as no tool call.
+    Calls may sit in prose or in a code fence of any case. Malformed JSON, unknown or
+    non-string tool names and non-object arguments are skipped, never raised.
     """
-    text = reply.strip()
-    if text.startswith("```") and text.endswith("```") and len(text) >= 6:
-        text = text[3:-3]
-        if text.startswith("json"):
-            text = text[4:]
-    try:
-        data = json.loads(text)
-    except (ValueError, RecursionError):
-        return None
-    if not isinstance(data, dict) or data.get("tool") not in TOOLS:
-        return None
-    arguments = data.get("arguments", {})
-    if not isinstance(arguments, dict):
-        return None
-    return ToolCall(data["tool"], arguments)
+    text, calls, decoder = reply[:MAX_SCANNED], [], json.JSONDecoder()
+    start = text.find("{")
+    while start != -1:
+        try:
+            data, end = decoder.raw_decode(text, start)
+        except (ValueError, RecursionError):
+            data, end = None, start + 1
+        arguments = data.get("arguments", {}) if isinstance(data, dict) else None
+        if isinstance(arguments, dict) and isinstance(data.get("tool"), str) and data["tool"] in TOOLS:
+            calls.append(ToolCall(data["tool"], arguments))
+        start = text.find("{", end)
+    return calls
 
 
 class CallLog:

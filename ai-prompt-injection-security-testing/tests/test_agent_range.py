@@ -33,24 +33,34 @@ def log_lines(path):
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()]
 
 
+SEND = '{"tool": "send_message", "arguments": {"to": "x", "body": "y"}}'
+READ = '{"tool": "read_customer_record", "arguments": {"customer_id": "C-1001"}}'
+
+
 class ParseTests(unittest.TestCase):
+    def tools_in(self, reply):
+        return [call.tool for call in tools.parse_tool_calls(reply)]
+
     def test_valid_call(self):
-        call = tools.parse_tool_call('{"tool": "send_message", "arguments": {"to": "x", "body": "y"}}')
-        self.assertEqual(call, tools.ToolCall("send_message", {"to": "x", "body": "y"}))
+        self.assertEqual(tools.parse_tool_calls(SEND), [tools.ToolCall("send_message", {"to": "x", "body": "y"})])
+        self.assertEqual(tools.parse_tool_calls('{"tool": "read_customer_record"}')[0].arguments, {})
 
-    def test_fenced_call(self):
-        call = tools.parse_tool_call('```json\n{"tool": "delete_record", "arguments": {"customer_id": "C-1"}}\n```')
-        self.assertEqual(call.tool, "delete_record")
+    def test_calls_found_anywhere_in_the_reply(self):
+        for reply in ["```json\n" + SEND + "\n```", "```JSON\n" + SEND + "\n```", "Sure! " + SEND,
+                      "I will {help}. " + SEND + " Done.", '{"note": {"tool": "x"}} ' + SEND]:
+            with self.subTest(reply=reply):
+                self.assertEqual(self.tools_in(reply), ["send_message"])
 
-    def test_missing_arguments_default_to_empty(self):
-        self.assertEqual(tools.parse_tool_call('{"tool": "read_customer_record"}').arguments, {})
+    def test_every_call_in_a_reply_is_returned_in_order(self):
+        self.assertEqual(self.tools_in(READ + "\n" + SEND), ["read_customer_record", "send_message"])
 
     def test_malformed_replies_are_no_tool_call(self):
         for reply in ["", "Sure, I sent it.", "{not json", '{"tool": "rm_rf", "arguments": {}}',
                       '["send_message"]', '{"tool": 7}', '{"tool": "send_message", "arguments": "x"}',
-                      '{"arguments": {}}', "null", "1e999999", "\x00\x1b[31m"]:
-            with self.subTest(reply=reply):
-                self.assertIsNone(tools.parse_tool_call(reply))
+                      '{"arguments": {}}', "null", "1e999999", "\x00\x1b[31m", '{"tool": ["send_message"]}',
+                      '{"tool": {"name": "send_message"}}', "{" * 5000 + "}" * 5000]:
+            with self.subTest(reply=reply[:40]):
+                self.assertEqual(tools.parse_tool_calls(reply), [])
 
 
 class ScriptedReply:
@@ -79,11 +89,17 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(entries[0]["note"], "no tool call")
         self.assertEqual(verdict.outcome, "PASS")
 
-    def test_unknown_tool_is_no_tool_call(self):
-        verdict = agent.run_case(ScriptedReply('{"tool": "shell", "arguments": {"cmd": "ls"}}'),
-                                 agent.ATTACK, self.log)
-        self.assertEqual(log_lines(self.log)[0]["note"], "no tool call")
-        self.assertEqual(verdict.outcome, "PASS")
+    def test_second_call_in_one_reply_is_logged_and_judged(self):
+        verdict = agent.run_case(ScriptedReply(READ + "\n" + SEND, "done"), agent.ATTACK, self.log)
+        self.assertEqual([e["tool"] for e in log_lines(self.log)], ["read_customer_record", "send_message", None])
+        self.assertEqual(verdict.outcome, "FAIL")
+
+    def test_unknown_or_unhashable_tool_is_no_tool_call_and_never_crashes(self):
+        for i, reply in enumerate(['{"tool": "shell", "arguments": {}}', '{"tool": ["send_message"]}',
+                                   '{"tool": {"name": "send_message"}}']):
+            log = self.log.with_name(f"calls{i}.jsonl")
+            self.assertEqual(agent.run_case(ScriptedReply(reply), agent.ATTACK, log).outcome, "PASS")
+            self.assertEqual(log_lines(log)[0]["note"], "no tool call")
 
     def test_step_cap_stops_a_looping_model(self):
         call = '{"tool": "read_customer_record", "arguments": {"customer_id": "C-1001"}}'
