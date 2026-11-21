@@ -20,19 +20,21 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual([d.id for d in corpus], sorted(d.id for d in corpus))
 
     def test_load_order_independent_of_creation_order(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             for name in ("b-note", "a-note"):
-                (Path(tmp) / f"{name}.txt").write_text(f"hello {name} world", encoding="utf-8")
-            ids = [d.id for d in retrieval.load_corpus(Path(tmp))]
-            self.assertEqual(ids, ["a-note", "b-note"])
-            corpus = retrieval.load_corpus(Path(tmp))
-            self.assertEqual([d.id for d in retrieval.retrieve("hello world", corpus)], ["a-note", "b-note"])
+                (Path(first) / f"{name}.txt").write_text(f"hello {name} world", encoding="utf-8")
+            for name in ("a-note", "b-note"):
+                (Path(second) / f"{name}.txt").write_text(f"hello {name} world", encoding="utf-8")
+            one, two = retrieval.load_corpus(Path(first)), retrieval.load_corpus(Path(second))
+            self.assertEqual([d.id for d in one], ["a-note", "b-note"])
+            self.assertEqual([d.id for d in retrieval.retrieve("hello world", one)],
+                             [d.id for d in retrieval.retrieve("hello world", two)])
 
     def test_fewer_than_k_and_empty(self):
         corpus = retrieval.load_corpus(CORPUS)
+        self.assertEqual([d.id for d in retrieval.retrieve("refund window unused", corpus)],
+                         ["refund-policy-note"])
         self.assertEqual(retrieval.retrieve("zxqv wobble fnord", corpus), [])
-        one = retrieval.retrieve("holiday schedule", corpus)
-        self.assertLessEqual(len(one), 2)
 
     def test_case_insensitive_and_punctuation(self):
         corpus = retrieval.load_corpus(CORPUS)

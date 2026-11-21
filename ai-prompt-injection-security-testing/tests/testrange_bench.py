@@ -167,7 +167,7 @@ class RangeBenchTests(unittest.TestCase):
     def test_readme_and_limits_explain_truncation_and_refusal(self):
         from tester.report import limits_text
         readme = Path("README.md").read_text(encoding="utf-8")
-        for needle in ("truncated", "20,000", "refusal", "FAIL", "--range"):
+        for needle in ("truncated", "20,000", "refusal", "FAIL", "--range", "required_all"):
             self.assertIn(needle, readme)
         limits = " ".join(limits_text({"suite": "range", "target": "mock"}, 7))
         for needle in ("truncated", "20,000", "not seen", "refusal", "FAIL"):

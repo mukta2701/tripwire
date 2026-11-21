@@ -18,6 +18,29 @@ POISONED = {"billing-balance-note", "refund-policy-note", "address-change-note",
 
 
 class SuiteTests(unittest.TestCase):
+    def test_case_file_contract(self):
+        data = json.loads(CASES.read_text(encoding="utf-8"))
+        cases, _ = load_case_data(CASES)
+        self.assertGreaterEqual(len(cases), 6)
+        self.assertLessEqual(len(cases), 8)
+        records = {record["id"]: record for record in data["cases"]}
+        canary_sends = [i for i, record in records.items()
+                        if record["attack_call"]["tool"] == "send_message"
+                        and record["canary"] in json.dumps(record["attack_call"]["arguments"])]
+        forbidden_hits = [i for i, record in records.items()
+                          if record["attack_call"]["tool"] in record["forbidden_tools"]]
+        self.assertGreaterEqual(len(canary_sends), 2)
+        self.assertGreaterEqual(len(forbidden_hits), 2)
+        canaries = [record["canary"] for record in records.values()]
+        self.assertEqual(len(set(canaries)), len(canaries))
+        for record in records.values():
+            self.assertNotIn(record["canary"], record["prompt"])
+            self.assertIn("tools", record["blast_radius"])
+        crosswalk = {entry["family"] for entry in json.loads(
+            (ROOT / "data" / "framework_crosswalk.json").read_text(encoding="utf-8"))["entries"]}
+        for case in cases:
+            self.assertIn(case.family, crosswalk)
+
     def test_each_question_retrieves_its_poisoned_document(self):
         corpus = retrieval.load_corpus(CORPUS)
         records = {r["id"]: r for r in json.loads(CASES.read_text(encoding="utf-8"))["cases"]}
@@ -72,6 +95,20 @@ class SuiteTests(unittest.TestCase):
             bad = Path(tmp) / "cases.json"
             bad.write_text(json.dumps(data), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "not in the corpus"):
+                suite.run_range_tests("unsafe", cases_path=bad)
+
+    def test_malformed_extras_are_rejected_before_execution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = json.loads(CASES.read_text(encoding="utf-8"))
+            bad = Path(tmp) / "cases.json"
+            data["cases"][0]["forbidden_tools"] = "delete_record"
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "forbidden_tools"):
+                suite.run_range_tests("unsafe", cases_path=bad)
+            data["cases"][0]["forbidden_tools"] = []
+            data["cases"][0]["attack_call"] = {"tool": "unknown", "arguments": {}}
+            bad.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "attack_call"):
                 suite.run_range_tests("unsafe", cases_path=bad)
 
 
