@@ -1,0 +1,38 @@
+name: Tests
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: ai-prompt-injection-security-testing
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -t .
+      - name: Gate the safe mock at 0 failures
+        run: |
+          python3 -m tester.test_runner --mode safe --output safe_results.json
+          python3 -m tester.gate safe_results.json --max-fail 0
+      - name: Check the gate catches the unsafe mock
+        run: |
+          python3 -m tester.test_runner --mode unsafe --output unsafe_results.json
+          set +e
+          python3 -m tester.gate unsafe_results.json --max-fail 0
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then
+            echo "Expected the gate to exit 1 on the unsafe mock, got $code"
+            exit 1
+          fi
