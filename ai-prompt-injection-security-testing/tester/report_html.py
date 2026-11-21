@@ -157,6 +157,7 @@ def _range_html(r: dict) -> str:
             f'<dt>Tool call</dt><dd><code>{h(call, None)}</code></dd>'
             f'<dt>Log line</dt><dd><code>{h(line, None)}</code></dd></dl>')
 
+
 def _case_study_html(study) -> str:
     cards = []
     for ex in study["examples"]:
