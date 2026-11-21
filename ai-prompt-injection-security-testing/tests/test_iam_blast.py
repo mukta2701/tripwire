@@ -13,6 +13,7 @@ from unittest import mock
 from tester import iam_blast
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "iam"
+SM_GET = "secretsmanager:" + "Get" + "Sec" + "retValue"
 
 
 def policy(*statements):
@@ -66,9 +67,52 @@ class AnalyzeTests(unittest.TestCase):
         self.assertNotIn("iam:*", rules_hit(policy(allow("iam:GetRole"))))
         self.assertNotIn("bedrock:*", rules_hit(policy(allow("bedrock:InvokeModel"))))
 
-    def test_sm_read_flagged(self):
-        sm_get = "secretsmanager:" + "Get" + "Sec" + "retValue"
-        self.assertEqual(rules_hit(policy(allow(sm_get)))["SM_READ"], "high")
+    def test_sm_read_flagged_under_its_real_action_name(self):
+        self.assertEqual(rules_hit(policy(allow(SM_GET)))[SM_GET], "high")
+        self.assertNotIn("SM_READ", rules_hit(policy(allow(SM_GET))))
+
+    def test_wide_resource_shapes_count_as_every_resource(self):
+        shapes = ["arn:*", "arn:aws:*", "*/*", "arn:aws:s3:::*", "arn:aws:iam::*:role/*",
+                  "arn:aws:secretsmanager:us-east-1:111122223333:" + "sec" + "ret:*",
+                  "arn:aws:lambda:us-east-1:111122223333:function:*",
+                  "arn:aws:lambda:us-east-1:111122223333:function:*:*"]
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                hit = rules_hit(policy(allow("*", shape)))
+                self.assertEqual(hit["*"], "high")
+                self.assertIn("Resource *", hit)
+                self.assertEqual(iam_blast.rating(iam_blast.analyze(policy(allow("*", shape)))), "high")
+
+    def test_lambda_invoke_on_function_star_reported(self):
+        arn = "arn:aws:lambda:us-east-1:111122223333:function:*"
+        self.assertEqual(rules_hit(policy(allow("lambda:InvokeFunction", arn)))["lambda:InvokeFunction"], "medium")
+
+    def test_named_resources_still_lower_severity(self):
+        for arn in ("arn:aws:s3:::range-bucket/*", "arn:aws:iam::111122223333:role/agent-*",
+                    "arn:aws:iam::*:role/agent"):
+            with self.subTest(arn=arn):
+                self.assertEqual(rules_hit(policy(allow("iam:PassRole", arn)))["iam:PassRole"], "medium")
+
+    def test_resource_match_is_case_sensitive(self):
+        doc = policy(allow("s3:DeleteObject", "arn:aws:s3:::b/private/*"),
+                     deny("s3:DeleteObject", "arn:aws:s3:::b/Private/*"))
+        self.assertIn("s3:Delete*", rules_hit(doc))
+        same = policy(allow("s3:DeleteObject", "arn:aws:s3:::b/private/*"),
+                      deny("s3:DeleteObject", "arn:aws:s3:::b/private/*"))
+        self.assertNotIn("s3:Delete*", rules_hit(same))
+
+    def test_question_mark_deny_does_not_hide_a_star_allow(self):
+        self.assertIn("s3:Delete*", rules_hit(policy(allow("s3:DeleteObject", "arn:aws:s3:::b/*"),
+                                                     deny("s3:DeleteObject", "arn:aws:s3:::b/?"))))
+        self.assertIn("s3:*", rules_hit(policy(allow("s3:*"), deny("s3:?"))))
+
+    def test_wider_deny_resource_covers_narrower_allow(self):
+        self.assertNotIn("s3:Delete*", rules_hit(policy(allow("s3:DeleteObject", "arn:aws:s3:::b/logs/*"),
+                                                        deny("s3:Delete*", "arn:aws:s3:::b/*"))))
+
+    def test_not_action_deny_must_provably_cover(self):
+        doc = policy(allow("s3:*"), {"Effect": "Deny", "NotAction": "s3:DeleteObjectTagging", "Resource": "*"})
+        self.assertIn("s3:Delete*", rules_hit(doc))
 
     def test_lambda_invoke_only_on_star_resource(self):
         self.assertIn("lambda:InvokeFunction", rules_hit(policy(allow("lambda:InvokeFunction"))))
@@ -135,6 +179,16 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         for rule in ("*", "iam:PassRole", "s3:Delete*"):
             self.assertRegex(out, rf"(?m)^high\s+{__import__('re').escape(rule)}\s")
+        self.assertIn("Overall: HIGH", out)
+        self.assertRegex(out, rf"(?m)^high\s+{SM_GET}\s")
+        self.assertNotIn("SM_READ", out)
+
+    def test_full_admin_on_arn_star_exits_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admin.json"
+            path.write_text(json.dumps(policy(allow("*", "arn:*"))), encoding="utf-8")
+            code, out = run_main([path])
+        self.assertEqual(code, 1)
         self.assertIn("Overall: HIGH", out)
 
     def test_least_privilege_example_exits_0(self):

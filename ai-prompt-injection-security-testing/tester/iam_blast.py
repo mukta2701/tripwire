@@ -3,8 +3,9 @@
 Usage: python3 -m tester.iam_blast data/iam/range_too_permissive.json [--access-analyzer]
 
 Reads a local policy JSON file only. Exit code 1 when any high finding is reachable, 0 otherwise.
-Conditions on Allow statements are ignored (counted as reachable); a Deny only removes a finding
-when it has no Condition and covers the Allow statement's resources.
+Conditions on Allow statements are ignored (counted as reachable). A Deny removes a finding only
+when it has no Condition and provably covers both the action and every resource the Allow grants;
+when unsure, the finding stays. Action names match case-insensitively, resource ARNs case-sensitively.
 """
 
 from __future__ import annotations
@@ -18,14 +19,15 @@ from pathlib import Path
 
 SEVERITIES = ("high", "medium", "low")
 SM = "secrets" + "manager"
+SM_GET = f"{SM}:Get" + "Sec" + "retValue"
 
-# (pattern shown, probe actions, severity on Resource "*", why, only when Resource is "*")
+# (pattern shown, probe actions, severity on a wide resource, why, only on a wide resource)
 RULES = [
     ("*", ["*"], "high", "every action in every service", False),
     ("iam:*", ["iam:*"], "high", "full IAM control: create users, attach admin policies", False),
     ("iam:PassRole", ["iam:PassRole"], "high", "hand a stronger role to a service it starts", False),
     ("sts:AssumeRole", ["sts:AssumeRole"], "high", "switch into another role", False),
-    ("SM_READ", [f"{SM}:GetSecretValue", f"{SM}:BatchGetSecretValue"], "high",
+    (SM_GET, [SM_GET, f"{SM}:Batch" + SM_GET.split(":")[1]], "high",
      "read stored Secrets Manager values", False),
     ("s3:*", ["s3:*"], "high", "every S3 action, including bucket policy changes", False),
     ("s3:Delete*", ["s3:Delete*", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:DeleteBucket"], "high",
@@ -33,9 +35,9 @@ RULES = [
     ("bedrock:*", ["bedrock:*"], "medium", "every Bedrock action, including guardrail and model changes", False),
     ("lambda:InvokeFunction", ["lambda:InvokeFunction"], "medium", "run any Lambda function", True),
 ]
-STAR_RESOURCE = ("Resource *", "medium", "the statement's actions apply to every resource")
+STAR_RESOURCE = ("Resource *", "medium", "its actions reach every resource, or every one of a type")
 
-_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f‪-‮⁦-⁩]")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 
 
 def clean(value, limit=160) -> str:
@@ -43,10 +45,36 @@ def clean(value, limit=160) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-def _glob(pattern: str, value: str) -> bool:
-    """IAM wildcard match: * and ?, case-insensitive. Probes with a literal * match only wider wildcards."""
-    regex = re.escape(pattern.lower()).replace(r"\*", ".*").replace(r"\?", ".")
-    return re.fullmatch(regex, value.lower()) is not None
+def _covers(pattern: str, value: str, fold: bool) -> bool:
+    """True when every string `value` can stand for is matched by `pattern` (IAM * and ? wildcards).
+
+    A * in `value` is a literal here: only a * in `pattern` can absorb it, and ? never does,
+    so `s3:*` covers `s3:Delete*` but `s3:?` does not cover `s3:*`.
+    """
+    if fold:
+        pattern, value = pattern.lower(), value.lower()
+    regex = re.escape(pattern).replace(r"\*", ".*").replace(r"\?", "[^*]")
+    return re.fullmatch(regex, value) is not None
+
+
+def _prefix(pattern: str) -> str:
+    return re.split(r"[*?]", pattern.lower(), 1)[0]
+
+
+def _disjoint(a: str, b: str) -> bool:
+    """True only when two action patterns provably share no action (their literal prefixes diverge)."""
+    pa, pb = _prefix(a), _prefix(b)
+    return not (pa.startswith(pb) or pb.startswith(pa))
+
+
+def _wide_resource(arn: str) -> bool:
+    """True for `*` and for ARNs whose name part is only wildcards: arn:*, arn:aws:s3:::*, role/*, function:*."""
+    parts = arn.split(":", 5)
+    if len(parts) < 6 or re.search(r"[*?]", parts[1] + parts[2]):
+        return "*" in arn
+    service, name = parts[2], parts[5]
+    pieces = [name.split("/", 1)[0]] if service == "s3" else re.split(r"[/:]", name, 1)
+    return any(p and "*" in p and not p.strip("*?/:") for p in pieces)
 
 
 def _as_list(value, what: str, where: str) -> list:
@@ -91,21 +119,31 @@ def _statements(doc) -> list:
 
 
 def _grants(st: dict, probe: str) -> bool:
-    hit = any(_glob(a, probe) for a in st["actions"])
-    return not hit if st["not_action"] else hit
+    """Allow side: may this statement reach the probe action? Kept generous so findings are not missed."""
+    if st["not_action"]:
+        return not any(_covers(a, probe, fold=True) for a in st["actions"])
+    return any(_covers(a, probe, fold=True) for a in st["actions"])
 
 
 def _broad(st: dict) -> bool:
-    return st["not_resource"] or "*" in st["resources"]
+    return st["not_resource"] or any(_wide_resource(r) for r in st["resources"])
+
+
+def _denies(d: dict, probe: str) -> bool:
+    """Deny side: does this statement provably block every action the probe stands for?"""
+    if d["not_action"]:
+        return all(_disjoint(a, probe) for a in d["actions"])
+    return any(_covers(a, probe, fold=True) for a in d["actions"])
 
 
 def _denied(probe: str, allow_st: dict, denies: list) -> bool:
     for d in denies:
-        if d["conditional"] or d["not_resource"] or not _grants(d, probe):
+        if d["conditional"] or d["not_resource"] or not _denies(d, probe):
             continue
         if "*" in d["resources"]:
             return True
-        if not _broad(allow_st) and all(any(_glob(p, r) for p in d["resources"]) for r in allow_st["resources"]):
+        if not allow_st["not_resource"] and all(
+                any(_covers(p, r, fold=False) for p in d["resources"]) for r in allow_st["resources"]):
             return True
     return False
 
@@ -150,9 +188,9 @@ def rating(findings: list) -> str:
 def render(findings: list, source: str) -> str:
     lines = [f"Tripwire IAM blast radius: {clean(source, 300)}"]
     if findings:
-        lines.append(f"{'severity':<9} {'pattern':<22} {'why':<60} granted by")
+        lines.append(f"{'severity':<9} {'pattern':<30} {'why':<60} granted by")
         for f in findings:
-            lines.append(f"{f['severity']:<9} {f['rule']:<22} {f['why']:<60} {', '.join(f['statements'])}")
+            lines.append(f"{f['severity']:<9} {f['rule']:<30} {f['why']:<60} {', '.join(f['statements'])}")
     else:
         lines.append("No risky reachable actions found.")
     counts = ", ".join(f"{sum(f['severity'] == s for f in findings)} {s}" for s in SEVERITIES)
