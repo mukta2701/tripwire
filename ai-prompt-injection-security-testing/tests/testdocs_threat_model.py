@@ -113,6 +113,14 @@ def limits_section(text):
     return text[match.start():] if match else ""
 
 
+def section_after(text, heading):
+    """The section starting at a heading line, up to the next ## heading."""
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(heading))
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return "\n".join(lines[start:end])
+
+
 class ThreatModelDocsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -148,6 +156,11 @@ class ThreatModelDocsTests(unittest.TestCase):
         self.assertIn("tester.gate", self.runbook)
         self.assertIn("python3 -m tester.gate", self.runbook)
         self.assertEqual(command_problems(self.runbook), [])
+
+    def test_contain_step_checks_edited_policy(self):
+        contain = section_after(self.runbook, "## 2. Contain")
+        self.assertIn("tester.iam_blast", contain)
+        self.assertNotIn("range_least_privilege", contain)
 
     def test_limits_sections(self):
         for text, name in ((self.threat, "threat_model.md"), (self.runbook, "runbook_prompt_injection.md")):
