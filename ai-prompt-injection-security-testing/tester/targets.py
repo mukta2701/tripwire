@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import math
+import subprocess
 import time
 from dataclasses import dataclass
 from typing import Protocol
@@ -118,3 +119,75 @@ class OpenAICompatTarget:
             raise ValueError("target response must contain assistant text")
         return TargetResponse(text,
                               {key: payload[key] for key in ("id", "model", "usage") if key in payload})
+
+
+# USD per million input and output units (input, output). Estimate only: check the Bedrock
+# pricing page (aws.amazon.com/bedrock/pricing) before trusting it.
+BEDROCK_PRICES_ESTIMATE = {
+    "amazon.nova-micro-v1:0": (0.035, 0.14),
+}
+
+
+class BedrockError(RuntimeError):
+    """A Bedrock call failed in a way worth showing as one readable line."""
+
+
+class BedrockTarget:
+    """Calls Bedrock Converse through the AWS CLI, so sign-in stays with the CLI (`aws login`)."""
+
+    name = "bedrock"
+
+    def __init__(self, model: str, *, system_variant: str = "none", max_tokens: int = 256,
+                 timeout: float = 60, runner=None):
+        if system_variant not in SYSTEM_VARIANTS:
+            raise ValueError("system variant must be none, weak or strong")
+        if not model.strip():
+            raise ValueError("model is required")
+        if type(max_tokens) is not int or max_tokens < 1:
+            raise ValueError("max tokens must be a positive integer")
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be finite and positive")
+        self.model, self.system_variant = model, system_variant
+        self.max_tokens, self.timeout = max_tokens, timeout
+        self.runner = runner if runner is not None else subprocess.run
+
+    def send(self, prompt: str, *, canary: str | None = None) -> TargetResponse:
+        template = SYSTEM_VARIANTS[self.system_variant]
+        if template and not canary:
+            raise ValueError("a canary is required for the weak and strong variants")
+        inference = {"maxTokens": self.max_tokens}
+        if getattr(self, "temperature", None) is not None:
+            inference["temperature"] = self.temperature
+        body = {"modelId": self.model,
+                "messages": [{"role": "user", "content": [{"text": prompt}]}],
+                "inferenceConfig": inference}
+        if template:  # the canary goes only into the system field, never the user message
+            body["system"] = [{"text": template.format(canary=canary)}]
+        args = ["aws", "bedrock-runtime", "converse", "--cli-input-json", json.dumps(body),
+                "--output", "json"]
+        try:
+            done = self.runner(args, capture_output=True, text=True, timeout=self.timeout)
+        except FileNotFoundError as error:
+            raise BedrockError("AWS CLI not found: install AWS CLI v2 and run `aws login`") from error
+        except subprocess.TimeoutExpired as error:
+            raise BedrockError(f"aws CLI timed out after {self.timeout:g}s") from error
+        if done.returncode != 0:
+            raise BedrockError(_cli_failure(done.returncode, done.stderr or ""))
+        try:
+            payload = json.loads(done.stdout)
+            blocks = payload["output"]["message"]["content"]
+            text = "".join(block["text"] for block in blocks if "text" in block)
+        except (ValueError, KeyError, TypeError) as error:
+            raise BedrockError("Bedrock reply did not contain assistant text") from error
+        return TargetResponse(text, {"model": self.model, "usage": payload.get("usage", {}),
+                                     "stopReason": payload.get("stopReason")})
+
+
+def _cli_failure(code: int, stderr: str) -> str:
+    detail = " ".join(stderr.split())[:300] or "no error output"
+    message = f"aws CLI exited {code}: {detail}"
+    if "Operation not allowed" in stderr:
+        message += " (this account is not allowed to run this model yet)"
+    elif "AccessDenied" in stderr:
+        message += " (check model access and IAM permission for bedrock:InvokeModel)"
+    return message

@@ -16,8 +16,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from tester.report import DEFAULT_CROSSWALK, render_report  # noqa: E402
 from tester.report_html import render_html, scorer_panel_data  # noqa: E402
-from tester.scoring_criteria import DEFAULT_CASES_PATH  # noqa: E402
-from tester.targets import SYSTEM_VARIANTS, MockTarget, OpenAICompatTarget  # noqa: E402
+from tester.scoring_criteria import DEFAULT_CASES_PATH, load_case_data  # noqa: E402
+from tester.targets import (BEDROCK_PRICES_ESTIMATE, SYSTEM_VARIANTS, BedrockTarget,  # noqa: E402
+                            MockTarget, OpenAICompatTarget)
 from tester.test_runner import run_tests  # noqa: E402
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]")
@@ -32,6 +33,21 @@ def safe_text(value, limit: int) -> str:
 
 def folder_name(when: datetime, label: str) -> str:
     return f"{when:%Y-%m-%d_%H%M}_{re.sub(r'[^A-Za-z0-9._-]+', '-', label).strip('-') or 'run'}"
+
+
+def cost_line(model: str, cases, trials: int, system_variant: str, max_tokens: int) -> str:
+    """Worst-case spend: every call uses its full output cap. Input is guessed at 4 chars per unit."""
+    template = SYSTEM_VARIANTS[system_variant] or ""
+    chars = sum(len(c.prompt) + len(template.format(canary=c.canary)) for c in cases) * trials
+    calls = len(cases) * trials
+    usage_in, usage_out = chars // 4 + 1, calls * max_tokens
+    head = f"Estimated cost (estimate, check the Bedrock pricing page): {calls} calls, "
+    if model not in BEDROCK_PRICES_ESTIMATE:
+        return head + f"no price on file for {safe_text(model, 80)}\n"
+    price_in, price_out = BEDROCK_PRICES_ESTIMATE[model]
+    dollars = (usage_in * price_in + usage_out * price_out) / 1_000_000
+    return head + (f"up to ${dollars:.4f} (~{usage_in} in + up to {usage_out} out at "
+                   f"${price_in}/${price_out} per million)\n")
 
 
 class Progress:
@@ -61,12 +77,15 @@ def main(argv=None, out=None, open_url=webbrowser.open, now=None) -> int:
     out = out if out is not None else sys.stdout
     parser = argparse.ArgumentParser(description="Run the cases with live progress and save a run folder.")
     parser.add_argument("model_name", nargs="?", default="", metavar="MODEL", help="Model name (same as --model).")
-    parser.add_argument("--model", default="", help="Model name for openai_compat.")
-    parser.add_argument("--target", choices=["mock", "openai_compat"], default=None)
+    parser.add_argument("--model", default="", help="Model name for openai_compat or bedrock.")
+    parser.add_argument("--target", choices=["mock", "openai_compat", "bedrock"], default=None)
     parser.add_argument("--mode", choices=["safe", "unsafe"], default="safe", help="Mock chatbot behaviour.")
     parser.add_argument("--base-url", default="http://localhost:11434/v1")
     parser.add_argument("--system-variant", choices=list(SYSTEM_VARIANTS), default="none",
-                        help="openai_compat only: put the case canary in a system message (weak or strong).")
+                        help="openai_compat and bedrock: put the case canary in a system message (weak or strong).")
+    parser.add_argument("--max-calls", type=int, default=300,
+                        help="bedrock only: refuse a run that needs more calls (cases x trials).")
+    parser.add_argument("--max-tokens", type=int, default=256, help="bedrock only: output cap per reply.")
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--timeout", type=float, default=180)
@@ -82,10 +101,23 @@ def main(argv=None, out=None, open_url=webbrowser.open, now=None) -> int:
     if target_name == "mock" and args.system_variant != "none":
         print("--system-variant is ignored for the mock target", file=sys.stderr)
     try:
-        target = (MockTarget(args.mode) if target_name == "mock" else OpenAICompatTarget(
-            args.base_url, model, i_have_authorization=args.i_have_authorization,
-            timeout=args.timeout, requests_per_second=args.requests_per_second,
-            system_variant=args.system_variant))
+        if target_name == "bedrock":
+            cases, _ = load_case_data(args.cases)
+            calls = len(cases) * args.trials
+            if calls > args.max_calls:
+                parser.error(f"this run needs {calls} calls ({len(cases)} cases x {args.trials} trials), "
+                             f"over --max-calls {args.max_calls}; nothing was sent")
+            target = BedrockTarget(model, system_variant=args.system_variant,
+                                   max_tokens=args.max_tokens, timeout=args.timeout)
+            out.write(cost_line(model, cases, args.trials, args.system_variant, args.max_tokens))
+            out.flush()
+        elif target_name == "mock":
+            target = MockTarget(args.mode)
+        else:
+            target = OpenAICompatTarget(
+                args.base_url, model, i_have_authorization=args.i_have_authorization,
+                timeout=args.timeout, requests_per_second=args.requests_per_second,
+                system_variant=args.system_variant)
         summary = run_tests(mode=args.mode, cases_path=args.cases, target=target, trials=args.trials,
                             temperature=args.temperature, progress=Progress(out))
         crosswalk = json.loads(Path(DEFAULT_CROSSWALK).read_text(encoding="utf-8"))
