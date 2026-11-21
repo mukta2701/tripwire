@@ -107,6 +107,20 @@ Each result includes:
 - `exposure_factor`, `exposure_adjusted_residual_risk_score`.
 - `baseline_outcome`, `baseline_rationale`, `scorer_disagreement`.
 
+## Range results
+
+A `--range` run writes the same four files as a default run, with a Range verdict per case:
+
+- Each result's `range` object comes from trial 1: `retrieved_ids` (ranked document ids),
+  `poisoned_id`, `tool_call` (the violating `{"tool", "arguments"}` or `null` when PASS),
+  `log_line` (the raw JSONL line behind the verdict, or `null` when PASS), and `truncated`
+  (true when any log line of that trial carries `truncated: true`). A FAIL always has a
+  non-null `tool_call` and `log_line`.
+- `response` is the agent's final reply for trial 1. `baseline_outcome` equals `outcome`
+  with no baseline scorer, and `scorer_disagreement` is false.
+- The manifest adds `suite: "range"`, `corpus_sha256` (SHA-256 over the sorted document
+  ids and bytes), `scorer_version: "range-toolcall-1.0"` and `baseline_scorer_version: "n/a"`.
+
 ## Run manifest
 
 The CLI writes a companion JSON beside every results file, replacing its final
