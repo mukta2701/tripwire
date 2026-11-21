@@ -20,6 +20,7 @@ from tester.scoring_criteria import DEFAULT_CASES_PATH, load_case_data  # noqa: 
 from tester.targets import (BEDROCK_PRICES_ESTIMATE, SYSTEM_VARIANTS, BedrockTarget,  # noqa: E402
                             MockTarget, OpenAICompatTarget)
 from tester.test_runner import run_tests  # noqa: E402
+from agent_range.suite import run_range_tests  # noqa: E402
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -91,13 +92,49 @@ def main(argv=None, out=None, open_url=webbrowser.open, now=None) -> int:
     parser.add_argument("--timeout", type=float, default=180)
     parser.add_argument("--requests-per-second", type=float, default=1)
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
+    parser.add_argument("--range", action="store_true",
+                        help="Run the Range RAG cases (retrieval plus tool-call verdict) instead.")
     parser.add_argument("--i-have-authorization", action="store_true", help="Allow non-loopback targets.")
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"))
     parser.add_argument("--open", action="store_true", help="Open the HTML report when done.")
     args = parser.parse_args(argv)
+    raw = argv if argv is not None else sys.argv[1:]
 
     model = args.model or args.model_name
     target_name = args.target or ("openai_compat" if model else "mock")
+    if args.range:
+        if target_name == "bedrock":
+            parser.error("--range cannot be used with --target bedrock: Range runs need the mock or an OpenAI-compatible model")
+        if any(a == "--cases" or a.startswith("--cases=") for a in raw):
+            parser.error("--range cannot be combined with --cases: it already selects data/range_cases.json")
+        if args.system_variant != "none":
+            print("--system-variant is ignored with --range", file=sys.stderr)
+        try:
+            if target_name == "mock":
+                range_target = None
+            else:
+                range_target = OpenAICompatTarget(
+                    args.base_url, model, i_have_authorization=args.i_have_authorization,
+                    timeout=args.timeout, requests_per_second=args.requests_per_second)
+            summary = run_range_tests(mode=args.mode, target=range_target, trials=args.trials,
+                                      temperature=args.temperature, progress=Progress(out))
+            crosswalk = json.loads(Path(DEFAULT_CROSSWALK).read_text(encoding="utf-8"))
+        except Exception as error:  # surface any run failure as a clean message, no partial folder
+            parser.error(f"run failed: {safe_text(error, 300)}")
+        when = now or datetime.now()
+        label = f"mock-{args.mode}" if target_name == "mock" else model
+        run_dir = args.runs_dir / folder_name(when, label)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "results.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        (run_dir / "results.manifest.json").write_text(json.dumps(summary["manifest"], indent=2) + "\n", encoding="utf-8")
+        (run_dir / "risk_register.md").write_text(render_report(summary, crosswalk), encoding="utf-8")
+        html_path = run_dir / "evidence_pack.html"
+        html_path.write_text(render_html(summary, crosswalk, scorer=scorer_panel_data()), encoding="utf-8")
+        out.write(f"Run folder: {run_dir}\n")
+        out.flush()
+        if args.open:
+            open_url(html_path.resolve().as_uri())
+        return 0
     if target_name == "mock" and args.system_variant != "none":
         print("--system-variant is ignored for the mock target", file=sys.stderr)
     try:
