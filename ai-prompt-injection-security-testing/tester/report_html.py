@@ -141,6 +141,23 @@ def _scorer_html(scorer) -> str:
             f'<thead><tr><th scope="col">Reference</th>{head}</tr></thead><tbody>{mat}</tbody></table></div>')
 
 
+def _range_html(r: dict) -> str:
+    """Range evidence block for one finding, everything through h/clean."""
+    if "range" not in r:
+        return ""
+    scope = r["range"]
+    ids = ", ".join(scope["retrieved_ids"]) if scope["retrieved_ids"] else "none retrieved"
+    if scope["tool_call"] is None:
+        call = "no tool call was made"
+    else:
+        call = json.dumps(scope["tool_call"], sort_keys=True)
+    line = scope["log_line"] if scope["log_line"] is not None else "no log line was written"
+    return (f'<h3>Range evidence</h3><dl>'
+            f'<dt>Retrieved documents</dt><dd><code>{h(ids)}</code></dd>'
+            f'<dt>Tool call</dt><dd><code>{h(call, None)}</code></dd>'
+            f'<dt>Log line</dt><dd><code>{h(line, None)}</code></dd></dl>')
+
+
 def _case_study_html(study) -> str:
     cards = []
     for ex in study["examples"]:
@@ -163,6 +180,11 @@ def render_html(summary: dict, crosswalk: dict, now: str | None = None, scorer=N
     results = ordered_results(summary)
     stamp = now or datetime.now(timezone.utc).isoformat()
     mock = manifest.get("target") == "mock"
+    if manifest.get("suite") == "range":
+        lede = (f"{len(results)} synthetic Range cases, scored from the tool-call log "
+                "and ranked by an illustrative prioritisation score.")
+    else:
+        lede = "Sixteen synthetic test cases, scored and ranked by an illustrative prioritisation score."
     banner = ('<p class="banner">Mock run<small>A local scripted stand-in, not a real model. '
               'Scores show the harness working.</small></p>' if mock else
               '<p class="banner">Real-model run<small>One small model, one configuration, one moment.</small></p>')
@@ -196,6 +218,7 @@ def render_html(summary: dict, crosswalk: dict, now: str | None = None, scorer=N
             f'<h3>Case text</h3><blockquote>{h(r["prompt"], RESPONSE_LIMIT)}</blockquote>'
             f'<h3>Response</h3><blockquote>{h(r["response"], RESPONSE_LIMIT)}</blockquote>'
             f'<h3>Scorer rationale</h3><blockquote>{h(r["rationale"], RESPONSE_LIMIT)}</blockquote>'
+            f'{_range_html(r)}'
             f'</div></details>')
 
     cwrows = []
@@ -220,7 +243,7 @@ def render_html(summary: dict, crosswalk: dict, now: str | None = None, scorer=N
             f'<td data-label="ISO themes">{iso}</td><td data-label="UK">{uk}</td></tr>')
 
     man = "".join(f"<dt>{h(k)}</dt><dd><code>{h(v)}</code></dd>" for k, v in manifest_items(manifest))
-    limits = "".join(f"<li>{h(t)}</li>" for t in limits_text(manifest))
+    limits = "".join(f"<li>{h(t)}</li>" for t in limits_text(manifest, len(results)))
     digest = base64.b64encode(hashlib.sha256(CSS.encode("utf-8")).digest()).decode()
     csp = f"default-src 'none'; style-src 'sha256-{digest}'; base-uri 'none'; form-action 'none'"
     tiles = [("Cases", len(results), ""), ("PASS", summary["pass_count"], ""),
@@ -242,7 +265,7 @@ def render_html(summary: dict, crosswalk: dict, now: str | None = None, scorer=N
 <div class="wrap">
 <header>
 <h1>Prompt-injection evidence pack</h1>
-<p class="lede">Sixteen synthetic test cases, scored and ranked by an illustrative prioritisation score.</p>
+<p class="lede">{lede}</p>
 {banner}
 <p class="muted">Report timestamp (varies): {h(stamp)}</p>
 <nav aria-label="Sections"><ul>

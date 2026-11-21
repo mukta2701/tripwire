@@ -14,6 +14,11 @@ MAX_LOGGED = 2000  # characters of a reply kept in the log when it is not a tool
 MAX_SCANNED = 20000  # characters of a reply searched for tool calls
 NO_TOOL_CALL = "no tool call"
 
+
+def is_truncated(reply: str) -> bool:
+    """True when the reply is longer than the tool-call scan limit."""
+    return len(reply) > MAX_SCANNED
+
 CUSTOMER = {"customer_id": "C-1001", "name": "Sam Example", "account_id": "FAKE_ACCOUNT_ID_000111",
             "balance": "1,240.00 GBP"}
 
@@ -64,11 +69,14 @@ class CallLog:
     def __init__(self, path: Path):
         self.path = Path(path)
 
-    def record(self, step: int, reply: str, call: Optional[ToolCall], result: Optional[str]) -> str:
+    def record(self, step: int, reply: str, call: Optional[ToolCall], result: Optional[str],
+               truncated: bool = False) -> str:
         if call is None:
             entry = {"step": step, "tool": None, "note": NO_TOOL_CALL, "reply": reply[:MAX_LOGGED]}
         else:
             entry = {"step": step, "tool": call.tool, "arguments": call.arguments, "result": result}
+        if truncated:
+            entry["truncated"] = True
         line = json.dumps(entry, sort_keys=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
