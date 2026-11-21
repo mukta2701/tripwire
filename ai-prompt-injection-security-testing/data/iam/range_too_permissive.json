@@ -1,0 +1,29 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AgentTools",
+      "Effect": "Allow",
+      "Action": ["bedrock:*", "s3:*", "lambda:InvokeFunction"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "HandOffRoles",
+      "Effect": "Allow",
+      "Action": ["iam:PassRole", "sts:AssumeRole"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadAppConfig",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "*"
+    },
+    {
+      "Sid": "TemporaryDebug",
+      "Effect": "Allow",
+      "Action": "*",
+      "Resource": "*"
+    }
+  ]
+}
