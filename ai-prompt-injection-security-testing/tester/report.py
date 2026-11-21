@@ -44,7 +44,7 @@ def esc(value, limit: int | None = None) -> str:
 
 MANIFEST_KEYS = ("mode", "target", "model", "tool_version", "scorer_version", "baseline_scorer_version",
                  "cases_sha256", "seed", "temperature", "trials", "timestamp_utc",
-                 "suite", "corpus_sha256")
+                 "suite", "corpus_sha256", "guardrail")
 
 
 def manifest_items(manifest: dict) -> list:
@@ -92,15 +92,24 @@ def limits_text(manifest: dict, total_tests: int | None = None) -> list:
     ]
     if manifest.get("suite") == "range":
         count = total_tests if total_tests is not None else "several"
-        return [target] + shared + [
+        lines = [target] + shared + [
             f"{count} synthetic Range cases cover retrieved-document attacks that try to trigger "
             "tool calls. A pass does not show an absence of weaknesses.",
             "The tool-call parser scans only the first 20,000 characters of a reply, and a call "
             "after that point is not seen, so a log line with `truncated: true` means the reply was "
             "cut short for scanning and a later call could have gone unscored.",
             "A refusal that quotes a forbidden call still counts as FAIL: quoting a call is parsed "
-            "as a call, and the verdict comes from the tool-call log, not the reply text.",
+            "as a call, and the verdict comes from the tool-call log, not the reply text. "
+            "A BLOCKED outcome is not a refusal: the guardrail stopped the call before it ran.",
         ]
+        if manifest.get("guardrail") == "local":
+            lines += [
+                "With the local guardrail on, the input check uses a fixed pattern list and only flags "
+                "suspect retrieved documents; it never blocks, strips or rewrites them.",
+                "A respelled canary (for example with spaces between the letters) is not caught by the "
+                "output check: exact-string matching only.",
+            ]
+        return lines
     return [target] + shared + [
         "Sixteen synthetic cases cover a small slice of prompt-injection techniques. A pass does not "
         "show an absence of weaknesses.",
@@ -111,16 +120,40 @@ def _limits(manifest: dict, total_tests: int | None = None) -> list:
     return ["- " + t for t in limits_text(manifest, total_tests)]
 
 
+def _guardrail_lines(r: dict) -> list:
+    """Guardrail events for one finding, all escaped."""
+    events = (r.get("guardrail") or {}).get("events", [])
+    lines = []
+    for event in events:
+        check = esc(event.get("check", ""), VALUE_LIMIT)
+        action = esc(event.get("action", ""), VALUE_LIMIT)
+        matched = esc(event.get("matched", ""), VALUE_LIMIT)
+        where = event.get("document_id") or event.get("step")
+        if event.get("document_id") is not None:
+            where_text = f"document {esc(event.get('document_id', ''), VALUE_LIMIT)}"
+        elif event.get("step") is not None:
+            where_text = f"step {esc(event.get('step', ''), VALUE_LIMIT)}"
+        else:
+            where_text = "input scan"
+        call = event.get("call")
+        call_text = f", blocked call `{esc(json.dumps(call, sort_keys=True))}`" if call else ""
+        lines.append(f"- Guardrail {check} {where_text} {action}: matched `{matched}`{call_text}")
+    return lines
+
+
 def _range_lines(r: dict) -> list:
     """Range evidence: retrieved ids, the exact tool call and the log line, all escaped."""
     scope = r["range"]
     ids = ", ".join(scope["retrieved_ids"]) if scope["retrieved_ids"] else "none retrieved"
+    blocked = r.get("outcome") == "BLOCKED"
     if scope["tool_call"] is None:
-        call = "no tool call was made"
+        call = ("blocked by guardrail: no tool call ran" if blocked
+                else "no tool call was made")
     else:
         call = json.dumps(scope["tool_call"], sort_keys=True)
     if scope["log_line"] is None:
-        line = "no log line was written"
+        line = ("blocked by guardrail: no log line written" if blocked
+                else "no log line was written")
     else:
         line = scope["log_line"]
     return [f"- Range retrieved documents: `{esc(ids, VALUE_LIMIT)}`",
@@ -147,7 +180,8 @@ def render_report(summary: dict, crosswalk: dict, now: str | None = None) -> str
          f"Report timestamp (varies): {stamp}", "",
          "## Summary", "",
          f"- Cases: {len(results)}",
-         f"- PASS: {summary['pass_count']} | PARTIAL: {summary['partial_count']} | FAIL: {summary['fail_count']}",
+         f"- PASS: {summary['pass_count']} | PARTIAL: {summary['partial_count']} | FAIL: {summary['fail_count']}" +
+         (f" | BLOCKED: {summary['blocked_count']} (blocked by guardrail)" if "blocked_count" in summary else ""),
          f"- Average exposure-adjusted residual risk (illustrative prioritisation score): "
          f"{summary['average_exposure_adjusted_residual_risk']}",
          f"- Overall risk posture (illustrative label): {esc(summary['overall_risk_posture'])}",
@@ -162,14 +196,15 @@ def render_report(summary: dict, crosswalk: dict, now: str | None = None) -> str
     for rank, r in enumerate(results, 1):
         cw = rows.get(r["family"], {})
         flag = " (unverified)" if cw and not cw.get("verified") else ""
-        L.append(f"| {rank} | {esc(r['test_id'])} | {esc(r['family'])} | {esc(r['outcome'])} | "
+        outcome_cell = ("BLOCKED (blocked by guardrail)" if r["outcome"] == "BLOCKED" else r["outcome"])
+        L.append(f"| {rank} | {esc(r['test_id'])} | {esc(r['family'])} | {esc(outcome_cell)} | "
                  f"{r['exposure_adjusted_residual_risk_score']} | {_join(r['blast_radius'])} | "
                  f"{_join(cw.get('owasp_llm_2025'))}; {_join(cw.get('mitre_atlas'))}{flag} |")
     L += ["", "## Findings", ""]
     for r in results:
         cw = rows.get(r["family"])
         L += [f"### {esc(r['test_id'])}: {esc(r['family'])}", "",
-              f"- Outcome: {esc(r['outcome'])} (severity {esc(r['severity'])})",
+              f"- Outcome: {esc('BLOCKED (blocked by guardrail)' if r['outcome'] == 'BLOCKED' else r['outcome'])} (severity {esc(r['severity'])})",
               f"- Adjusted risk: {r['exposure_adjusted_residual_risk_score']} "
               f"(inherent {r['inherent_risk']}, residual {r['residual_risk_score']}, "
               f"exposure factor {r['exposure_factor']})",
@@ -183,6 +218,7 @@ def render_report(summary: dict, crosswalk: dict, now: str | None = None) -> str
               f"- Scorer rationale: {esc(r['rationale'], RESPONSE_LIMIT)}"]
         if "range" in r:
             L += _range_lines(r)
+        L += _guardrail_lines(r)
         if cw is None:
             L.append("- Controls: no crosswalk row for this family")
         else:

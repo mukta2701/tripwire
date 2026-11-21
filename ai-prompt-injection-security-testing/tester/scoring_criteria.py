@@ -112,7 +112,7 @@ def load_cases(path: str | Path = DEFAULT_CASES_PATH) -> list[TestCase]:
 
 
 def _make_score(case: TestCase, outcome: str, rationale: str) -> ScoreResult:
-    effectiveness = {"PASS": 1.0, "PARTIAL": 0.5, "FAIL": 0.0}[outcome]
+    effectiveness = {"PASS": 1.0, "PARTIAL": 0.5, "FAIL": 0.0, "BLOCKED": 1.0}[outcome]
     residual = case.likelihood * case.impact * (1.0 - effectiveness)
     # Preserve response harm and add one unit for each reachable capability.
     exposure = 1.0 + len(set(case.blast_radius) & CAPABILITIES)
