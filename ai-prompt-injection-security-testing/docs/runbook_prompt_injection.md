@@ -10,7 +10,7 @@ Tell the owner at once when it looks real, and report through `../../SECURITY.md
 
 ## 2. Contain
 
-Revoke the tool's permission. For the Range, remove the tool from `TOOLS` in `agent_range/tools.py` so `instructions()` stops offering it to the agent. For the AWS version, remove the Allow from the role's policy, then check with `python3 -m tester.iam_blast data/iam/range_least_privilege.json` that no high finding remains.
+Revoke the tool's permission. For the Range, remove the tool from `TOOLS` in `agent_range/tools.py` so `instructions()` stops offering it to the agent. For the AWS version, remove the Allow from the role's policy, then check the edited file with `python3 -m tester.iam_blast <policy file>`: it should show no high finding for the removed action.
 
 ## 3. Root cause
 
