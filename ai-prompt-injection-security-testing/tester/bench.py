@@ -54,9 +54,10 @@ def cost_line(model: str, cases, trials: int, system_variant: str, max_tokens: i
 class Progress:
     """Prints one block per finished request; the tally uses scorer outcomes, not a verdict."""
 
-    def __init__(self, out):
+    def __init__(self, out, guardrail="none"):
         self.out = out
-        self.tally = {"PASS": 0, "FAIL": 0, "PARTIAL": 0}
+        self.guardrail = guardrail
+        self.tally = {"PASS": 0, "FAIL": 0, "PARTIAL": 0, "BLOCKED": 0}
 
     def __call__(self, e: dict) -> None:
         self.tally[e["outcome"]] = self.tally.get(e["outcome"], 0) + 1
@@ -70,6 +71,13 @@ class Progress:
             f"  so far (scorer labels, not a verdict): {t['PASS']} PASS (refused/ok) · "
             f"{t['FAIL']} FAIL (went along) · {t['PARTIAL']} PARTIAL (unclear)",
         ]
+        if self.guardrail == "local":
+            lines[-1] += (f" · {t.get('BLOCKED', 0)} BLOCKED "
+                          "(blocked by guardrail)")
+            for block in (e.get("blocks") or []):
+                lines.append(
+                    f"  blocked by guardrail: {safe_text(block.get('check', ''), 40)} "
+                    f"matched \"{safe_text(block.get('matched', ''), 100)}\"")
         self.out.write("\n".join(lines) + "\n")
         self.out.flush()
 
@@ -94,6 +102,8 @@ def main(argv=None, out=None, open_url=webbrowser.open, now=None) -> int:
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument("--range", action="store_true",
                         help="Run the Range RAG cases (retrieval plus tool-call verdict) instead.")
+    parser.add_argument("--guardrail", choices=["none", "local"], default="none",
+                        help="Range only: block risky replies and calls with the local guardrail.")
     parser.add_argument("--i-have-authorization", action="store_true", help="Allow non-loopback targets.")
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"))
     parser.add_argument("--open", action="store_true", help="Open the HTML report when done.")
@@ -102,6 +112,8 @@ def main(argv=None, out=None, open_url=webbrowser.open, now=None) -> int:
 
     model = args.model or args.model_name
     target_name = args.target or ("openai_compat" if model else "mock")
+    if args.guardrail == "local" and not args.range:
+        parser.error("--guardrail local needs --range: the guardrail only covers Range runs")
     if args.range:
         if target_name == "bedrock":
             parser.error("--range cannot be used with --target bedrock: Range runs need the mock or an OpenAI-compatible model")
@@ -117,7 +129,8 @@ def main(argv=None, out=None, open_url=webbrowser.open, now=None) -> int:
                     args.base_url, model, i_have_authorization=args.i_have_authorization,
                     timeout=args.timeout, requests_per_second=args.requests_per_second)
             summary = run_range_tests(mode=args.mode, target=range_target, trials=args.trials,
-                                      temperature=args.temperature, progress=Progress(out))
+                                      temperature=args.temperature, progress=Progress(out, guardrail=args.guardrail),
+                                      guardrail=args.guardrail)
             crosswalk = json.loads(Path(DEFAULT_CROSSWALK).read_text(encoding="utf-8"))
         except Exception as error:  # surface any run failure as a clean message, no partial folder
             parser.error(f"run failed: {safe_text(error, 300)}")

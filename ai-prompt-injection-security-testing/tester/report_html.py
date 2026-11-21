@@ -16,11 +16,11 @@ from tester.report import (DEFAULT_CROSSWALK, RESPONSE_LIMIT, VALUE_LIMIT, _rate
 
 CSS = """
 :root{--bg:#f6f6f9;--card:#fff;--text:#1a1a22;--muted:#4d4d5a;--line:#c9c9d4;--accent:#2d3a8c;
---fail-bg:#fde6e6;--fail-fg:#7f1010;--part-bg:#fff0cc;--part-fg:#6b4200;--pass-bg:#ddf3e4;--pass-fg:#0a5528;
+--fail-bg:#fde6e6;--fail-fg:#7f1010;--part-bg:#fff0cc;--part-fg:#6b4200;--pass-bg:#ddf3e4;--pass-fg:#0a5528;--blocked-bg:#e0e7ff;--blocked-fg:#1e2a7a;
 --crit-bg:#7f1010;--crit-fg:#fff;--high-bg:#a64b00;--high-fg:#fff;--med-bg:#6b5b00;--med-fg:#fff;
 --unv-bg:#fff0cc;--unv-fg:#6b4200;--ver-bg:#ddf3e4;--ver-fg:#0a5528;--mock-bg:#e6e9fb;--mock-fg:#1f2a73}
 @media (prefers-color-scheme: dark){:root{--bg:#121218;--card:#1c1c25;--text:#ececf2;--muted:#b4b4c2;--line:#3a3a48;--accent:#a9b6ff;
---fail-bg:#4a1517;--fail-fg:#ffcaca;--part-bg:#473708;--part-fg:#ffe2a0;--pass-bg:#10381f;--pass-fg:#b5efc7;
+--fail-bg:#4a1517;--fail-fg:#ffcaca;--part-bg:#473708;--part-fg:#ffe2a0;--pass-bg:#10381f;--pass-fg:#b5efc7;--blocked-bg:#232a5e;--blocked-fg:#d3d9ff;
 --crit-bg:#ffb3b3;--crit-fg:#3d0606;--high-bg:#ffc78f;--high-fg:#3a1c00;--med-bg:#f2e08a;--med-fg:#2e2600;
 --unv-bg:#473708;--unv-fg:#ffe2a0;--ver-bg:#10381f;--ver-fg:#b5efc7;--mock-bg:#262c58;--mock-fg:#d3d9ff}}
 *{box-sizing:border-box}
@@ -46,7 +46,7 @@ a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-of
 .tile-score{border-width:2px}
 .badge{display:inline-block;padding:1px 9px;border-radius:999px;font-size:.82rem;font-weight:700;white-space:nowrap;border:1px solid currentColor}
 .sev-critical{background:var(--crit-bg);color:var(--crit-fg)}.sev-high{background:var(--high-bg);color:var(--high-fg)}.sev-medium{background:var(--med-bg);color:var(--med-fg)}
-.out-fail{background:var(--fail-bg);color:var(--fail-fg)}.out-partial{background:var(--part-bg);color:var(--part-fg)}.out-pass{background:var(--pass-bg);color:var(--pass-fg)}
+.out-fail{background:var(--fail-bg);color:var(--fail-fg)}.out-partial{background:var(--part-bg);color:var(--part-fg)}.out-pass{background:var(--pass-bg);color:var(--pass-fg)}.out-blocked{background:var(--blocked-bg);color:var(--blocked-fg);border-width:2px}
 .unverified{background:var(--unv-bg);color:var(--unv-fg)}.verified{background:var(--ver-bg);color:var(--ver-fg)}
 table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line)}
 th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}
@@ -82,7 +82,7 @@ footer{margin-top:40px;color:var(--muted);font-size:.9rem}
 SEV = {"critical": ("&#9670; ", "sev-critical"), "high": ("&#9650; ", "sev-high"),
        "medium": ("&#9679; ", "sev-medium")}
 OUT = {"FAIL": ("&#10007; ", "out-fail"), "PARTIAL": ("&#9680; ", "out-partial"),
-       "PASS": ("&#10003; ", "out-pass")}
+       "PASS": ("&#10003; ", "out-pass"), "BLOCKED": ("&#11042; ", "out-blocked")}
 
 
 def h(value, limit=VALUE_LIMIT):
@@ -141,18 +141,49 @@ def _scorer_html(scorer) -> str:
             f'<thead><tr><th scope="col">Reference</th>{head}</tr></thead><tbody>{mat}</tbody></table></div>')
 
 
+def _guardrail_html(r: dict) -> str:
+    """Guardrail events block for one finding, everything through h."""
+    events = (r.get("guardrail") or {}).get("events", [])
+    if not events:
+        return ""
+    items = []
+    for event in events:
+        check = h(event.get("check", ""))
+        action = h(event.get("action", ""))
+        matched = h(event.get("matched", ""))
+        if event.get("document_id") is not None:
+            where = f"document <code>{h(event.get('document_id', ''))}</code>"
+        elif event.get("step") is not None:
+            where = f"step <code>{h(event.get('step', ''))}</code>"
+        else:
+            where = "input scan"
+        call = event.get("call")
+        call_html = f" blocked call <code>{h(json.dumps(call, sort_keys=True), None)}</code>" if call else ""
+        items.append(f"<li>Guardrail {check} {where} {action}: matched <code>{matched}</code>{call_html}</li>")
+    return f"<h3>Guardrail events</h3><ul>{''.join(items)}</ul>"
+
+
 def _range_html(r: dict) -> str:
     """Range evidence block for one finding, everything through h/clean."""
     if "range" not in r:
         return ""
     scope = r["range"]
+    blocked = r.get("outcome") == "BLOCKED"
     ids = ", ".join(scope["retrieved_ids"]) if scope["retrieved_ids"] else "none retrieved"
     if scope["tool_call"] is None:
-        call = "no tool call was made"
+        call = ("blocked by guardrail: no tool call ran" if blocked
+                else "no tool call was made")
     else:
         call = json.dumps(scope["tool_call"], sort_keys=True)
-    line = scope["log_line"] if scope["log_line"] is not None else "no log line was written"
-    return (f'<h3>Range evidence</h3><dl>'
+    if scope["log_line"] is None:
+        line = ("blocked by guardrail: no log line written" if blocked
+                else "no log line was written")
+    else:
+        line = scope["log_line"]
+    outcome_note = ""
+    if blocked:
+        outcome_note = "<p>Blocked by guardrail: the guardrail stopped the call before it ran.</p>"
+    return (f'<h3>Range evidence</h3>{outcome_note}<dl>'
             f'<dt>Retrieved documents</dt><dd><code>{h(ids)}</code></dd>'
             f'<dt>Tool call</dt><dd><code>{h(call, None)}</code></dd>'
             f'<dt>Log line</dt><dd><code>{h(line, None)}</code></dd></dl>')
@@ -183,6 +214,8 @@ def render_html(summary: dict, crosswalk: dict, now: str | None = None, scorer=N
     if manifest.get("suite") == "range":
         lede = (f"{len(results)} synthetic Range cases, scored from the tool-call log "
                 "and ranked by an illustrative prioritisation score.")
+        if manifest.get("guardrail") == "local":
+            lede += " BLOCKED means the guardrail stopped the call; it is not a model refusal."
     else:
         lede = "Sixteen synthetic test cases, scored and ranked by an illustrative prioritisation score."
     banner = ('<p class="banner">Mock run<small>A local scripted stand-in, not a real model. '
@@ -219,6 +252,7 @@ def render_html(summary: dict, crosswalk: dict, now: str | None = None, scorer=N
             f'<h3>Response</h3><blockquote>{h(r["response"], RESPONSE_LIMIT)}</blockquote>'
             f'<h3>Scorer rationale</h3><blockquote>{h(r["rationale"], RESPONSE_LIMIT)}</blockquote>'
             f'{_range_html(r)}'
+            f'{_guardrail_html(r)}'
             f'</div></details>')
 
     cwrows = []
@@ -247,8 +281,10 @@ def render_html(summary: dict, crosswalk: dict, now: str | None = None, scorer=N
     digest = base64.b64encode(hashlib.sha256(CSS.encode("utf-8")).digest()).decode()
     csp = f"default-src 'none'; style-src 'sha256-{digest}'; base-uri 'none'; form-action 'none'"
     tiles = [("Cases", len(results), ""), ("PASS", summary["pass_count"], ""),
-             ("PARTIAL", summary["partial_count"], ""), ("FAIL", summary["fail_count"], ""),
-             ("Scorer disagreements", summary["scorer_disagreement_count"], "")]
+             ("PARTIAL", summary["partial_count"], ""), ("FAIL", summary["fail_count"], "")]
+    if "blocked_count" in summary:
+        tiles.append((f"BLOCKED (blocked by guardrail)", summary["blocked_count"], ""))
+    tiles.append(("Scorer disagreements", summary["scorer_disagreement_count"], ""))
     tile_html = "".join(f'<li class="tile"><span class="n">{h(v)}</span><span class="l">{h(k)}</span></li>' for k, v, _ in tiles)
     return f"""<!doctype html>
 <html lang="en">
