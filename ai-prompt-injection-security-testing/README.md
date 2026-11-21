@@ -209,6 +209,7 @@ Two synthetic replies, shown in the evidence pack with `--case-study`:
 - [docs/PLAN_3NOV.md](docs/PLAN_3NOV.md): the project plan
 - [docs/uk_market_analysis.md](docs/uk_market_analysis.md): UK market notes. This is second-hand (web search only, primary documents not opened) and partly unverified; check before quoting
 - [docs/crosswalk_sources.md](docs/crosswalk_sources.md): what was checked for the framework mapping
+- [docs/threat_model.md](docs/threat_model.md) and [docs/runbook_prompt_injection.md](docs/runbook_prompt_injection.md): Range threat model and prompt-injection runbook
 - [SECURITY.md](../SECURITY.md): reporting and authorised use
 - [evidence/real_run_llama3_2_3b.md](evidence/real_run_llama3_2_3b.md): the first real run
 - [LICENSE](../LICENSE): Apache-2.0
